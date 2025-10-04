@@ -1,56 +1,51 @@
-
-
-
 pipeline {
-    agent any
-    
+  agent any
 
-    environment {
-        SCANNER_HOME = tool 'sonar-scanner'
-        SONAR_TOKEN = credentials('sonar-token')
-        SONAR_ORGANIZATION = 'jenkins-project-123'
-        SONAR_PROJECT_KEY = 'jenkins-project-123_ci-jenkins'
+  environment {
+    IMAGE_NAME      = "docker.io/prashanthreddy235/crud-js"   // <-- change if your Docker Hub repo differs
+    CONTAINER_NAME  = "crud-js"
+    APP_PORT        = "3000"
+    DEPLOY_PORT     = "80"
+    DOCKERHUB_CREDS = "dockerhub-credentials"                 // <-- matches what you created
+  }
+
+  stages {
+    stage('Checkout') {
+      steps { checkout scm }
     }
 
-    stages {
-        
-        stage('Code-Analysis') {
-            steps {
-                withSonarQubeEnv('SonarCloud') {
-                    sh '''$SCANNER_HOME/bin/sonar-scanner \
-  -Dsonar.organization=jenkins-project-123 \
-  -Dsonar.projectKey=jenkins-project-123_ci-jenkins \
-  -Dsonar.sources=. \
-  -Dsonar.host.url=https://sonarcloud.io '''
-                }
-            }
+    stage('Build Image') {
+      steps {
+        sh "docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} ."
+        sh "docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${IMAGE_NAME}:latest"
+      }
+    }
+
+    stage('Push Image') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: env.DOCKERHUB_CREDS, usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+          sh 'echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin'
+          sh "docker push ${IMAGE_NAME}:${BUILD_NUMBER}"
+          sh "docker push ${IMAGE_NAME}:latest"
         }
-       
-        
-      
-       stage('Docker Build And Push') {
-            steps {
-                script {
-                    docker.withRegistry('', 'docker-cred') {
-                        def buildNumber = env.BUILD_NUMBER ?: '1'
-                        def image = docker.build("pekker123/crud-123:latest")
-                        image.push()
-                    }
-                }
-            }
-        }
-    
-       
-        stage('Deploy To EC2') {
-            steps {
-                script {
-                        sh 'docker rm -f $(docker ps -q) || true'
-                        sh 'docker run -d -p 3000:3000 pekker123/crud-123:latest'
-                        
-                    
-                }
-            }
-        }
-        
-}
+      }
+      post { always { sh 'docker logout || true' } }
+    }
+
+    stage('Deploy (same EC2)') {
+      steps {
+        sh """
+          docker pull ${IMAGE_NAME}:latest || true
+          docker rm -f ${CONTAINER_NAME} || true
+          docker run -d --name ${CONTAINER_NAME} \\
+            -p ${DEPLOY_PORT}:${APP_PORT} \\
+            --restart=always \\
+            -e PORT=${APP_PORT} \\
+            ${IMAGE_NAME}:latest
+        """
+      }
+    }
+  }
+
+  options { timestamps() }
 }
